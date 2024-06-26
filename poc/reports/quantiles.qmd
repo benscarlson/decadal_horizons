@@ -1,0 +1,130 @@
+---
+title: "Examples for quantiles function"
+format: 
+  html:
+    self-contained: true
+    fig-format: jpeg
+execute: 
+  echo: true
+  message: false
+  warning: false
+params:
+  pd: ~/projects/decadal_horizons
+  wd: NULL
+  
+---
+
+```{r setup}
+
+#Note interactive() is FALSE when clicking the render button
+if(interactive()) {
+  .pd <- '~/projects/decadal_horizons'
+  .wd <- file.path(.pd,'analysis/poc/reports/quantiles')
+} else {
+  .pd <- params$pd
+  .wd <- params$wd
+}
+
+pd <- function(...) file.path(.pd,...)
+wd <- function(...) file.path(.wd,...)
+
+#---- Initialize Environment ----#
+
+source(pd('src/startup.r'))
+
+invisible(assert_that(!is.null(.wd)))
+
+#---- Libraries ----
+suppressWarnings(
+  suppressPackageStartupMessages({
+    library(knitr)
+    library(patchwork)
+  }))
+
+tic() #For report execution time
+
+#Source all files in the auto load funs directory
+list.files(pd('src/funs/auto'),full.names=TRUE) %>% walk(source)
+source(pd('src/funs/themes.r'))
+
+theme_set(theme_eda)
+
+source(pd('src/poc/reports/quantiles_funs.r'))
+
+#---- Local functions ----
+
+#---- Local parameters ----
+
+#---- Files and folders ----
+
+#---- Initialize database ----#
+
+#---- Load data ----
+
+```
+
+#### `r strftime(Sys.time(),format='%Y-%m-%d')`
+
+### Examples usings Pep's data
+
+```{r}
+#---- Environmental data
+
+#Per pep we can just keep years 1982:2014
+had12 <- qread(pd('data/pep/had12_ACCESS-ESM1-5_ssp585.qs'))  %>%
+  select(-c(x,y)) %>%
+  pivot_longer(-cell,names_to='year') %>%
+  filter(year %in% 1982:2014 & !is.na(value)) %>%
+  mutate(cell=as.integer(cell),year=as.integer(year),value=as.integer(value)) #Reduce size in memory
+
+had12
+
+#--- Species data
+
+spp <- qread(pd('data/pep/Acacia_quornensis.qs')) %>% pull('cell') %>% as.integer
+
+spp
+
+#By detault, gets 95, 99, and 100% quantiles using quantileType=7 over all data (e.g. no grouping)
+almostEveryQuantileEver(spp,had12)
+
+#Same but for quantile types 1 to 5
+almostEveryQuantileEver(spp,had12,types=1:5)
+
+#25, 50, 75% quantiles
+almostEveryQuantileEver(spp,had12,probs=c(0.25,0.5,0.75))
+
+#0.95 quantiles over all data (no grouping) and for each year.
+almostEveryQuantileEver(spp,had12,probs=0.95,by=c('none','year'))
+
+```
+
+
+
+```{r finalize}
+
+#---- Warnings ----
+warns <- warnings()
+
+if(length(warns) > 0) { cat('\n'); summary(warns); cat('\n') }
+
+#---- Git Repo ----
+repo <- git2r::repository(pd('src'))
+gitSha <- git2r::sha(git2r::repository_head(repo)) %>% substr(1,7)
+
+rmt <- git2r::remotes(repo)
+
+if(length(rmt)) {
+  #TODO: need to parse rmt when I have a repo that has a remote
+  shaTxt <- glue('[{gitSha}](https://github.com/{rmt}/tree/{gitSha})')
+} else {
+  shaTxt <- gitSha
+}
+
+```
+
+Commit when this report was run: `r shaTxt`
+
+`r strftime(Sys.time(),format='%Y-%m-%d %H:%M')`. `r Sys.timezone()`
+
+`r capture.output(toc())`

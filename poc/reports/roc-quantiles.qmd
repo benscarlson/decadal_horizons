@@ -1,0 +1,152 @@
+---
+title: "Report"
+format: 
+  html:
+    self-contained: true
+    fig-format: jpeg
+execute: 
+  echo: false
+  message: false
+  warning: false
+params:
+  pd: ~/projects/decadal_horizons
+  wd: NULL
+  sesnm: NULL
+  seed: NULL
+  
+---
+
+```{r setup}
+#| include: false
+
+#Note interactive() is FALSE when clicking the render button
+if(interactive()) {
+  .pd <- '~/projects/decadal_horizons'
+  .wd <- file.path(.pd,'analysis/poc/roc_quantiles')
+} else {
+  .pd <- params$pd
+  .wd <- params$wd
+}
+
+pd <- function(...) file.path(.pd,...)
+wd <- function(...) file.path(.wd,...)
+
+#---- Initialize Environment ----#
+
+source(pd('src/startup.r'))
+
+invisible(assert_that(!is.null(.wd)))
+
+#---- Libraries ----
+suppressWarnings(
+  suppressPackageStartupMessages({
+    library(knitr)
+    library(patchwork)
+    library(sf)
+    library(qs)
+  }))
+
+tic() #For report execution time
+
+#Source all files in the auto load funs directory
+list.files(pd('src/funs/auto'),full.names=TRUE) %>% walk(source)
+source(pd('src/funs/themes.r'))
+
+theme_set(theme_eda)
+
+#---- Local functions ----
+
+#---- Local parameters ----
+
+#---- Files and folders ----
+
+#---- Initialize database ----#
+
+#---- Load data ----
+
+```
+
+#### `r strftime(Sys.time(),format='%Y-%m-%d')`
+
+### Andreas' grid
+
+```{r}
+
+grid <- readRDS(pd('data/andreas/terrestrial_grid_equal_area.rds'))
+
+plot(st_geometry(grid))
+
+st_crs(grid)
+
+```
+
+#### Pep's data
+
+```{r}
+
+#---- Environmental data
+
+max_int <- 2147483647L
+
+had12 <- qread(pd('data/pep/had12_ACCESS-ESM1-5_ssp585.qs'))
+nrow(had12)
+class(had12)
+
+glimpse(had12)
+max(had12$cell) < max_int #TRUE
+
+format(object.size(had12),units='MB',standard='SI') #843 MB
+
+#Just play around with formats
+
+#Save cellxy for later if we need it
+cellxy <- had12 %>% mutate(cell=as.integer(cell)) %>% select(cell,x,y)
+
+format(object.size(cellxy),units='MB',standard='SI')
+#
+had12Lng <- had12 %>%
+  pivot_longer(-c(cell,x,y),names_to='year') %>% #102 million rows. 4112.6 MB
+  filter(!is.na(value)) %>% #31 million rows. 1260.4 MB
+  select(cell,year,value) %>% #756.2 MB
+  mutate(cell=as.integer(cell),year=as.integer(year),value=as.integer(value)) #378.1 MB
+
+#Note sort(unique(had12Lng$value)) before doing as.integer(value) showed values were 0:12
+
+format(object.size(had12Lng),units='MB',standard='SI')
+
+had12Lng
+
+sort(unique(had12Lng$year))
+
+#--- Species data
+
+spp <- qread(pd('data/pep/Acacia_quornensis.qs'))
+```
+
+```{r finalize}
+
+#---- Warnings ----
+warns <- warnings()
+
+if(length(warns) > 0) { cat('\n'); summary(warns); cat('\n') }
+
+#---- Git Repo ----
+repo <- git2r::repository(pd('src'))
+gitSha <- git2r::sha(git2r::repository_head(repo)) %>% substr(1,7)
+
+rmt <- git2r::remotes(repo)
+
+if(length(rmt)) {
+  #TODO: need to parse rmt when I have a repo that has a remote
+  shaTxt <- glue('[{gitSha}](https://github.com/{rmt}/tree/{gitSha})')
+} else {
+  shaTxt <- gitSha
+}
+
+```
+
+Commit when this report was run: `r shaTxt`
+
+`r strftime(Sys.time(),format='%Y-%m-%d %H:%M')`. `r Sys.timezone()`
+
+`r capture.output(toc())`
