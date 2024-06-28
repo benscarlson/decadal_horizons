@@ -1,41 +1,58 @@
 
-#TODO: Move example code to quantiles.qmd
-
-# #Set up data for the call
-# envDat0 <- readRDS(pd('data/andreas/data/tas_Amon_EC-Earth3_dcppB-forecast_s2023-r1i4p1f1.rds'))
+# #Quick tests to validate mQuant
+# vals <- rnorm(100,0,1)
+# probs <- c(0.95,0.99)
+# qfun.pars=list(names=FALSE)
+# weights <- 1:100
+#   
+# all(
+#   quantile(vals,probs=probs,names=FALSE)==
+#   mQuant(vals,qfun='quantile',probs=probs,types=7,qfun.pars=qfun.pars)$q.val)
 # 
-# tic() #separate takes 85 seconds 
-# envDat <- envDat0 %>%
-#   pivot_longer(cols=-world_id) %>%
-#   rename(cell=world_id) %>%
-#   separate(name,into=c('year','month'),sep='-',convert=TRUE)
-# toc()
+# all(
+#   c(quantile(vals,probs=probs,type=1,names=FALSE),
+#     quantile(vals,probs=probs,type=9,names=FALSE))==
+#   mQuant(vals,qfun='quantile',probs=probs,types=c(1,9),qfun.pars=qfun.pars)$q.val)
 # 
-# spDat0 <- readRDS(pd('data/andreas/data/Amphibians.rds'))
-
+# qfun.pars=list(weights=weights)
+# 
+# all(
+#   weighted.quantile(x=vals,probs=probs,weights=weights,type='Type7')==
+#   mQuant(vals,qfun='weighted.quantile',probs=probs,types='Type7',qfun.pars=qfun.pars)$q.val)
+# 
+# all(
+#   c(weighted.quantile(x=vals,probs=probs,weights=weights,type='Type7'),
+#     weighted.quantile(x=vals,probs=probs,weights=weights,type='Harrell-Davis')) ==
+#     mQuant(vals,qfun='weighted.quantile',probs=probs,types=c('Type7','Harrell-Davis'),
+#            qfun.pars=qfun.pars)$q.val)
 
 #Return requested quantiles for each requested type
-mQuantTypes <- function(vals,probs,types) {
+mQuant <- function(vals,qfun,probs,types,qfun.pars) {
+
   #Map over each type and return the requested quantiles per type
-  tibble(quantileType=types) %>%
+  tibble(q.type=types) %>%
     mutate(qtypes=map(types,~{
-      tibble(q=probs,q.val=quantile(vals,probs,type=.x,names=FALSE))
+      tibble(
+        q=probs,
+        q.val=rlang::exec(qfun,x=vals,probs=probs,type=.x,!!!qfun.pars)
+      )
     })) %>%
     unnest(cols=qtypes)
 }
 
-almostEveryQuantileEver=function(occ.cells,envDat,by='none',probs=c(.95,.99,1),types=7){
+thresholds=function(dat,qfun='quantile',by='none',probs=c(.95,.99,1),types=7,weights=NULL){
   #Testing: types=1:2; probs=c(.95,.99); by=c('none','month')
+  # types=1:2; probs=0.95; by='none'
+  # types=7; probs=0.95; by='year'
   
-  occ.cells=tibble(cell=occ.cells)
-  
-  #occ.cells contains duplicates in some datasets. Should fail, but for now just remove
-  occ.cells <- occ.cells %>% distinct(cell)
-  
-  #Join to get values for occupied cells
-  #TODO: try nest -> join -> unnest to see if it's faster
-  spEnv <- envDat %>% 
-    inner_join(occ.cells,by='cell')
+  if(qfun=='quantile') {
+    qfun.pars <- list(names=FALSE)
+  } else if(qfun=='weighted.quantile') {
+    require(cNORM)
+    qfun.pars <- list(weights=weights)
+    # 7 is the default for quantile, set to default for weighted.quantile instead
+    types <- ifelse(types==7,'Type7',types) 
+  }
 
   tibble(group=by) %>%
     mutate(qdat=map(group,~{
@@ -43,51 +60,16 @@ almostEveryQuantileEver=function(occ.cells,envDat,by='none',probs=c(.95,.99,1),t
       #If none, set to NULL so that there is no grouping 
       if(.x=='none') {grp <- NULL} else {grp <- .x}
 
-      spEnv %>%
+      dat %>%
         nest(data=-grp) %>%
         mutate(qdat=map(data,~{
-          mQuantTypes(.x$value,probs=probs,types=types)
+          mQuant(vals=.x$value,qfun=qfun,probs=probs,types=types,qfun.pars=qfun.pars)
         })) %>%
         select(-data) %>%
         unnest(qdat) %>%
-        rename(group_value=grp)
+        rename(group.val=grp)
     })) %>%
-    unnest(qdat)
+    unnest(qdat) %>%
+    select(any_of(c('group','group.val','q.type','q','q.val'))) #group.val may not exist so use any_of
 
 }
-
-#TODO: Move examples to quantiles.qmd
-# #---- Call for one species ----
-# almostEveryQuantileEver(spDat0[[1]],envDat,by=c('none','month'),probs=0.95) %>% View
-# 
-# #---- Call for all species
-# # Could also do this in parallel
-# spDat <- tibble(
-#   species = names(spDat0),
-#   occ.cells = unname(spDat0)
-# ) 
-# 
-# #100: 12 seconds
-# #1000: 120 seconds
-# tic()
-# spQuantiles <- spDat %>%
-#   mutate(qdat=map(occ.cells,almostEveryQuantileEver,
-#                   envDat=envDat,probs=0.95)) %>%
-#   select(-occ.cells) %>%
-#   unnest(cols=qdat)
-# toc()
-# 
-# # Overall and per-month 95, 99 and 100% quantiles for all species
-# #100: 15 seconds
-# #1000: 147 seconds
-# #7150: 1080 seconds
-# tic()
-# spQuantiles <- spDat %>%
-#   mutate(qdat=map(occ.cells,almostEveryQuantileEver,
-#                   envDat=envDat,by=c('none','month'),probs=c(0.95,0.99,1))) %>%
-#   select(-occ.cells) %>%
-#   unnest(cols=qdat)
-# toc()
-# 
-# dir.create(wd(),recursive=TRUE)
-# saveRDS(spQuantiles,file=wd('andreas_quantiles.rds'))

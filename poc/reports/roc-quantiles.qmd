@@ -43,6 +43,7 @@ suppressWarnings(
     library(knitr)
     library(patchwork)
     library(sf)
+    library(terra)
     library(qs)
   }))
 
@@ -121,6 +122,35 @@ sort(unique(had12Lng$year))
 #--- Species data
 
 spp <- qread(pd('data/pep/Acacia_quornensis.qs'))
+```
+
+Generate absences and find species-specific quantiles
+
+```{r}
+
+#library (tidyterra)
+source(pd('src/poc/pep/absences.r'))
+
+rmodel <- terra::rast(xmin = -180,xmax=180,ymin=-90,ymax=90,res=0.5)
+
+sp_cells <- qread(pd('data/pep/wgs84/Vietnascincus_rugosus.qs'))
+buffdist= 5e5
+habitat_mask <- rnaturalearth::ne_download(type='land',category = 'physical', scale=10,returnclass = 'sf')
+habitat_mask <- terra::rasterize(vect(habitat_mask),rmodel,touches=T)
+plot(habitat_mask)
+
+abcs <- cheap_absences(sp_cells,rmodel,habitat_mask=habitat_mask,
+  partial_absences=FALSE,include_presences=FALSE,method='buffer',
+  buffdist=buffdist)
+
+#Per pep we can just keep years 1982:2014
+had12 <- qread(pd('data/pep/had12_ACCESS-ESM1-5_ssp585.qs'))  %>%
+  select(-c(x,y)) %>%
+  pivot_longer(-cell,names_to='year') %>%
+  filter(year %in% 1982:2014 & !is.na(value)) %>%
+  mutate(cell=as.integer(cell),year=as.integer(year),value=as.integer(value)) #Reduce size in memory
+
+
 ```
 
 ```{r finalize}

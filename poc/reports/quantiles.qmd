@@ -14,6 +14,8 @@ params:
   
 ---
 
+## Setup
+
 ```{r setup}
 
 #Note interactive() is FALSE when clicking the render button
@@ -39,6 +41,7 @@ suppressWarnings(
   suppressPackageStartupMessages({
     library(knitr)
     library(patchwork)
+    library(qs)
   }))
 
 tic() #For report execution time
@@ -51,54 +54,141 @@ theme_set(theme_eda)
 
 source(pd('src/poc/reports/quantiles_funs.r'))
 
-#---- Local functions ----
-
-#---- Local parameters ----
-
-#---- Files and folders ----
-
-#---- Initialize database ----#
-
-#---- Load data ----
-
 ```
 
 #### `r strftime(Sys.time(),format='%Y-%m-%d')`
 
-### Examples usings Pep's data
+## Examples usings Pep's data
 
 ```{r}
 #---- Environmental data
 
 #Per pep we can just keep years 1982:2014
-had12 <- qread(pd('data/pep/had12_ACCESS-ESM1-5_ssp585.qs'))  %>%
+(had12 <- qread(pd('data/pep/set_original/had12_ACCESS-ESM1-5_ssp585.qs'))  %>%
   select(-c(x,y)) %>%
   pivot_longer(-cell,names_to='year') %>%
   filter(year %in% 1982:2014 & !is.na(value)) %>%
-  mutate(cell=as.integer(cell),year=as.integer(year),value=as.integer(value)) #Reduce size in memory
-
-had12
+  mutate(cell=as.integer(cell),year=as.integer(year),value=as.integer(value))) #Reduce size in memory
 
 #--- Species data
 
-spp <- qread(pd('data/pep/Acacia_quornensis.qs')) %>% pull('cell') %>% as.integer
+(spp <- qread(pd('data/pep/set_original/Acacia_quornensis.qs')) %>% as_tibble) 
 
-spp
+(dat <- spp %>% select(-x,-y) %>%
+  mutate(cell=as.integer(cell)) %>%
+  inner_join(had12,by='cell') %>%
+  select(cell,year,value,weight=n))
 
+#Sanity check.
+length(unique(dat$cell))==nrow(spp) #TRUE
+```
+
+### Thresholds using the `quantiles` function
+
+`qfun` defaults to `'quantiles'`
+
+```{r}
 #By detault, gets 95, 99, and 100% quantiles using quantileType=7 over all data (e.g. no grouping)
-almostEveryQuantileEver(spp,had12)
+thresholds(dat)
 
 #Same but for quantile types 1 to 5
-almostEveryQuantileEver(spp,had12,types=1:5)
+thresholds(dat,types=1:5)
 
 #25, 50, 75% quantiles
-almostEveryQuantileEver(spp,had12,probs=c(0.25,0.5,0.75))
+thresholds(dat,probs=c(0.25,0.5,0.75))
 
 #0.95 quantiles over all data (no grouping) and for each year.
-almostEveryQuantileEver(spp,had12,probs=0.95,by=c('none','year'))
+thresholds(dat,probs=0.95,by=c('none','year'))
+```
+
+### Thresholds using the `weighted.quantiles` function
+
+```{r}
+
+thresholds(dat,qfun='weighted.quantile',probs=0.95,weights=dat$weight)
+
+thresholds(dat,qfun='weighted.quantile',probs=0.95,weights=dat$weight,
+           types=c('Harrell-Davis','Type7'))
 
 ```
 
+```{r}
+#| eval: false
+#| echo: false
+
+# # Drought horizons
+# 
+# Set 1 from Slack (https://biodiversitye-hqh2559.slack.com/archives/D079W948W49/p1719517291359659)
+# 
+# Look at the data
+
+terr <- rast(pd('data/pep/set_1/terrestrial.tif'))
+
+had12r <- rast(pd('data/pep/set_1/had12_ACCESS-ESM1-5_ssp585_spei_2055.tif'))
+crs(had12r,proj=TRUE)
+had12r
+head(values(had12r))
+is.na(had12r)
+plot(had12r)
+ncell(had12r) #864000
+
+had12_0 <- qread(pd('data/pep/set_1/had12_ACCESS-ESM1-5_ssp585.qs'))
+max(had12_0$cell) #864000
+```
+
+```{r}
+#| eval: false
+#| echo: false
+
+# #Set up data for the call
+# envDat0 <- readRDS(pd('data/andreas/data/tas_Amon_EC-Earth3_dcppB-forecast_s2023-r1i4p1f1.rds'))
+# 
+# tic() #separate takes 85 seconds 
+# envDat <- envDat0 %>%
+#   pivot_longer(cols=-world_id) %>%
+#   rename(cell=world_id) %>%
+#   separate(name,into=c('year','month'),sep='-',convert=TRUE)
+# toc()
+# 
+# spDat0 <- readRDS(pd('data/andreas/data/Amphibians.rds'))
+
+
+# #---- Call for one species ----
+# almostEveryQuantileEver(spDat0[[1]],envDat,by=c('none','month'),probs=0.95) %>% View
+# 
+# #---- Call for all species
+# # Could also do this in parallel
+# spDat <- tibble(
+#   species = names(spDat0),
+#   occ.cells = unname(spDat0)
+# ) 
+# 
+# #100: 12 seconds
+# #1000: 120 seconds
+# tic()
+# spQuantiles <- spDat %>%
+#   mutate(qdat=map(occ.cells,almostEveryQuantileEver,
+#                   envDat=envDat,probs=0.95)) %>%
+#   select(-occ.cells) %>%
+#   unnest(cols=qdat)
+# toc()
+# 
+# # Overall and per-month 95, 99 and 100% quantiles for all species
+# #100: 15 seconds
+# #1000: 147 seconds
+# #7150: 1080 seconds
+# tic()
+# spQuantiles <- spDat %>%
+#   mutate(qdat=map(occ.cells,almostEveryQuantileEver,
+#                   envDat=envDat,by=c('none','month'),probs=c(0.95,0.99,1))) %>%
+#   select(-occ.cells) %>%
+#   unnest(cols=qdat)
+# toc()
+# 
+# dir.create(wd(),recursive=TRUE)
+# saveRDS(spQuantiles,file=wd('andreas_quantiles.rds'))
+
+```
 
 
 ```{r finalize}

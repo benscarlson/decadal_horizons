@@ -1,23 +1,25 @@
 setopt interactivecomments
 bindkey -e
 
-pd=~/projects/myproject
-wd=$pd/analysis/main
+pd=~/projects/decadal_horizons
+wd=$pd/analysis/poc/reports/quantiles
 src=$pd/src
-db=$pd/analysis/main/data/database.db
-sesnm=main
 
 mkdir -p $wd
 
 cd $wd
 
-qmd=$src/reports/myreport.qmd
+qmd=$src/poc/reports/quantiles.qmd
 
 fbase=${${qmd##*/}%.qmd} #Get file name without extenstion
-out=$wd/reports/$fbase.html
+out=$wd/$fbase.html
 
 mkdir -p ${out%/*}
 
-quarto render $qmd -P wd:$wd -P sesnm:$sesnm
+quarto render $qmd -P wd:$wd
 mv ${qmd%.*}.html $out
 open $out
+
+mkdir ~/projects/reports/reports/docs/decadal_horizons
+
+cp $out ~/projects/reports/reports/docs/decadal_horizons

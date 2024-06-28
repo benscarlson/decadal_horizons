@@ -22,7 +22,6 @@
 #' @param sp_cells data.frame or alike with the column cell specifying cell ids.
 #' @param weights_column character. optional. column with the name specifying the weights in the presences
 #' @param rmodel spatRaster of reference for the species cellid
-#' @param method character. Method to do absences 'adjacent', 'buffer', 'ecoregions'
 #' @param ras_ecoregions spatRaster where each number is an ecoregion ID
 #' @param buffdist numeric. Typically m or the unit of the projection of the raster. Defaut to 500 km
 #' @param habitat_mask spatRaster where NA values indicate out of habitat (e.g. sea, land, etc.)
@@ -34,10 +33,11 @@
 #' @examples
 #'
 
-cheap_absences <- function (sp_cells,rmodel,weights_column=NULL,method=NULL,
+cheap_absences <- function (sp_cells,rmodel,weights_column=NULL,
                             ras_ecoregions=NULL,buffdist=500000,habitat_mask=NULL,
-                           partial_absences=T,include_presences=T){
-  if (missing(method)) stop ('no method for selecting absences is added')
+                           partial_absences=T,include_presences=T,
+                           method='adjacent'){
+  
   cid <- sp_cells$cell
   rsp = rast (rmodel)
   values(rsp) <- 1:terra::ncell(rsp)
@@ -58,7 +58,7 @@ cheap_absences <- function (sp_cells,rmodel,weights_column=NULL,method=NULL,
     rsp_bufdist <- terra::buffer(rsp,width=buffdist) *1
     rsp_bufdist <- terra::subst (rsp_bufdist,from=1,to=1,others=NA)
     abs <- tidyterra::as_tibble(rsp_bufdist,na.rm=T,cells=T,xy=T) |>
-      dplyr::filter(!cell %in% cid) |> pull(cell)
+      dplyr::select(!cell %in% cid)
   }
   if (method=='ecoregions'){
     #method ecoregions
@@ -103,7 +103,6 @@ cheap_absences <- function (sp_cells,rmodel,weights_column=NULL,method=NULL,
     out_abs <- out_abs[!na_vals,]
   }
   # RETURN ====
-  return(out_abs)
+  return(out_pa)
 }
-
 
