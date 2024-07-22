@@ -9,17 +9,22 @@ mkdir -p $wd
 
 cd $wd
 
-#qmd=$src/poc/reports/roc-quantiles.qmd
+#spp=Pseudabutilon_harleyi
+#spp=Sophora_nuttalliana
+spp=Elaeocarpus_castaneifolius
+
 qmd=$src/poc/reports/roc-quantiles_2.qmd
 
 fbase=${${qmd##*/}%.qmd} #Get file name without extenstion
-out=$wd/$fbase.html
+out=$wd/${fbase}_${spp}.html
 
 mkdir -p ${out%/*}
 
-quarto render $qmd -P wd:$wd
+quarto render $qmd -P wd:$wd -P species:$spp
 mv ${qmd%.*}.html $out
 open $out
+
+#---- Publish report
 
 RPT_HOME=~/projects/reports/reports/docs
 
@@ -37,3 +42,6 @@ git -C $rptsrc push
 
 echo https://benscarlson.github.io/reports/decadal_horizons/${out##*/}
 
+https://benscarlson.github.io/reports/decadal_horizons/roc-quantiles_2_Pseudabutilon_harleyi.html
+https://benscarlson.github.io/reports/decadal_horizons/roc-quantiles_2_Sophora_nuttalliana.html
+https://benscarlson.github.io/reports/decadal_horizons/roc-quantiles_2_Elaeocarpus_castaneifolius.html

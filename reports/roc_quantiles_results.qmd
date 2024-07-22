@@ -1,0 +1,143 @@
+---
+title: "ROC Quantiles Multispecies"
+format: 
+  html:
+    self-contained: true
+    fig-format: jpeg
+execute: 
+  echo: false
+  message: false
+  warning: false
+params:
+  pd: ~/projects/decadal_horizons
+  wd: NULL
+  
+---
+
+```{r setup}
+#| include: false
+
+#Note interactive() is FALSE when clicking the render button
+if(interactive()) {
+  .pd <- '~/projects/decadal_horizons'
+  .wd <- file.path(.pd,'analysis/poc/roc_quantiles')
+  .datPF <- file.path(.wd,'data/roc_quantiles.csv')
+
+} else {
+  .pd <- params$pd
+  .wd <- params$wd
+  .datPF <- file.path(.wd,'data/roc_quantiles.csv')
+}
+
+pd <- function(...) file.path(.pd,...)
+wd <- function(...) file.path(.wd,...)
+
+#---- Initialize Environment ----#
+
+source(pd('src/startup.r'))
+
+invisible(assert_that(!is.null(.wd)))
+
+#---- Libraries ----
+suppressWarnings(
+  suppressPackageStartupMessages({
+    library(knitr)
+    library(patchwork)
+  }))
+
+tic() #For report execution time
+
+#Source all files in the auto load funs directory
+list.files(pd('src/funs/auto'),full.names=TRUE) %>% walk(source)
+source(pd('src/funs/themes.r'))
+
+theme_set(theme_pres)
+
+#---- Local functions ----
+
+#---- Local parameters ----
+
+#---- Files and folders ----
+
+#---- Initialize database ----#
+
+#---- Load data ----
+message('Loading data...')
+
+dat <- read_csv(.datPF)
+
+```
+
+#### `r strftime(Sys.time(),format='%Y-%m-%d')`
+
+### Optimal quantile
+
+```{r}
+
+dat %>%
+ggplot(aes(x=optimal_quantile)) +
+  geom_histogram() +
+  facet_wrap(vars(var),scales='free',ncol=2) +
+  theme_minimal()
+
+```
+
+```{r}
+
+dat %>%
+ggplot(aes(x=log10(n_pres),y=optimal_quantile)) +
+  geom_point() +
+  facet_wrap(vars(var),scales='free',ncol=2) +
+  theme_minimal()
+
+```
+
+### Sensitivity
+
+```{r}
+
+dat %>%
+ggplot(aes(x=sensitivity)) +
+  geom_histogram() +
+  facet_wrap(vars(var),scales='free',ncol=2) +
+  theme_minimal()
+
+```
+
+```{r}
+
+dat %>%
+ggplot(aes(x=log10(n_pres),y=sensitivity)) +
+  geom_point() +
+  facet_wrap(vars(var),scales='free',ncol=2) +
+  theme_minimal()
+
+```
+
+```{r finalize}
+
+#---- Warnings ----
+warns <- warnings()
+
+if(length(warns) > 0) { cat('\n'); summary(warns); cat('\n') }
+
+#---- Git Repo ----
+repo <- git2r::repository(pd('src'))
+gitSha <- git2r::sha(git2r::repository_head(repo)) %>% substr(1,7)
+
+rmt <- git2r::remotes(repo)
+
+if(length(rmt)) {
+  #TODO: need to parse rmt when I have a repo that has a remote
+  shaTxt <- glue('[{gitSha}](https://github.com/{rmt}/tree/{gitSha})')
+} else {
+  shaTxt <- gitSha
+}
+
+```
+
+Commit when this report was run: `r shaTxt`
+
+`r strftime(Sys.time(),format='%Y-%m-%d %H:%M')`. `r Sys.timezone()`
+
+`r capture.output(toc())`

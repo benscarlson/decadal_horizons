@@ -1,11 +1,11 @@
 ---
-title: "Report"
+title: "ROC-based quantiles"
 format: 
   html:
     self-contained: true
     fig-format: jpeg
 execute: 
-  echo: false
+  echo: true
   message: false
   warning: false
 params:
@@ -16,8 +16,11 @@ params:
   
 ---
 
+#### `r strftime(Sys.time(),format='%Y-%m-%d')`
+
+## Setup
+
 ```{r setup}
-#| include: false
 
 #Note interactive() is FALSE when clicking the render button
 if(interactive()) {
@@ -42,6 +45,7 @@ suppressWarnings(
   suppressPackageStartupMessages({
     library(knitr)
     library(patchwork)
+    library(pROC)
     library(sf)
     library(terra)
     library(qs)
@@ -55,101 +59,73 @@ source(pd('src/funs/themes.r'))
 
 theme_set(theme_eda)
 
-#---- Local functions ----
-
-#---- Local parameters ----
-
-#---- Files and folders ----
-
-#---- Initialize database ----#
-
-#---- Load data ----
-
 ```
 
-#### `r strftime(Sys.time(),format='%Y-%m-%d')`
-
-### Andreas' grid
+Generate absences and find species-specific quantiles.
 
 ```{r}
+# IDEA: all table grids should have the source raster attached to them
+#   Source raster should have cell id for each raster
 
-grid <- readRDS(pd('data/andreas/terrestrial_grid_equal_area.rds'))
-
-plot(st_geometry(grid))
-
-st_crs(grid)
-
-```
-
-#### Pep's data
-
-```{r}
-
-#---- Environmental data
-
-max_int <- 2147483647L
-
-had12 <- qread(pd('data/pep/had12_ACCESS-ESM1-5_ssp585.qs'))
-nrow(had12)
-class(had12)
-
-glimpse(had12)
-max(had12$cell) < max_int #TRUE
-
-format(object.size(had12),units='MB',standard='SI') #843 MB
-
-#Just play around with formats
-
-#Save cellxy for later if we need it
-cellxy <- had12 %>% mutate(cell=as.integer(cell)) %>% select(cell,x,y)
-
-format(object.size(cellxy),units='MB',standard='SI')
-#
-had12Lng <- had12 %>%
-  pivot_longer(-c(cell,x,y),names_to='year') %>% #102 million rows. 4112.6 MB
-  filter(!is.na(value)) %>% #31 million rows. 1260.4 MB
-  select(cell,year,value) %>% #756.2 MB
-  mutate(cell=as.integer(cell),year=as.integer(year),value=as.integer(value)) #378.1 MB
-
-#Note sort(unique(had12Lng$value)) before doing as.integer(value) showed values were 0:12
-
-format(object.size(had12Lng),units='MB',standard='SI')
-
-had12Lng
-
-sort(unique(had12Lng$year))
-
-#--- Species data
-
-spp <- qread(pd('data/pep/Acacia_quornensis.qs'))
-```
-
-Generate absences and find species-specific quantiles
-
-```{r}
-
-#library (tidyterra)
 source(pd('src/poc/pep/absences.r'))
 
-rmodel <- terra::rast(xmin = -180,xmax=180,ymin=-90,ymax=90,res=0.5)
+#Load Pep's data 
+sp_cells <- qread(pd('data/pep/set_1/Bothriochloa_ewartiana.qs')) %>% as_tibble
+rmodel <- rast(pd('data/pep/set_1/had12_ACCESS-ESM1-5_ssp585_spei_2055.tif'))
 
-sp_cells <- qread(pd('data/pep/wgs84/Vietnascincus_rugosus.qs'))
 buffdist= 5e5
 habitat_mask <- rnaturalearth::ne_download(type='land',category = 'physical', scale=10,returnclass = 'sf')
 habitat_mask <- terra::rasterize(vect(habitat_mask),rmodel,touches=T)
-plot(habitat_mask)
+plot(habitat_mask) #
 
+ #Sanity checks
+invisible(assert_that(all(sp_cells$cell < ncell(rmodel)))) #Make sure spp cell ids are within the range of rmodel cell ids
+invisible(assert_that(ncell(rmodel)==ncell(habitat_mask))) #rmodel and habitat mask are the same size
+invisible(assert_that(crs(rmodel,proj=TRUE)==crs(habitat_mask,proj=TRUE))) #habitat_mask does not have a crs
+
+# pa==1 means presence, pa==0 means absence
 abcs <- cheap_absences(sp_cells,rmodel,habitat_mask=habitat_mask,
-  partial_absences=FALSE,include_presences=FALSE,method='buffer',
+  partial_absences=FALSE,include_presences=TRUE,method='buffer',
   buffdist=buffdist)
 
+#Note 322 pres in the original file, but cheap_absences only returns 107
+# This is due to habitat masking. Should look into this.
+abcs %>% group_by(pa) %>% summarize(n=n())
+
 #Per pep we can just keep years 1982:2014
-had12 <- qread(pd('data/pep/had12_ACCESS-ESM1-5_ssp585.qs'))  %>%
+had12 <- qread(pd('data/pep/set_1/had12_ACCESS-ESM1-5_ssp585.qs'))  %>%
   select(-c(x,y)) %>%
   pivot_longer(-cell,names_to='year') %>%
   filter(year %in% 1982:2014 & !is.na(value)) %>%
   mutate(cell=as.integer(cell),year=as.integer(year),value=as.integer(value)) #Reduce size in memory
 
+spEnv <- had12 %>%
+  inner_join(abcs %>% select(-n),by='cell') %>%
+  mutate(pa=as.factor(pa))
+
+ggplot(spEnv,aes(x=value,y=pa)) +
+  geom_jitter() +
+  labs(y='Presence')
+```
+
+Determine the quantile of the optimal threshold based on Youden's J (sens+spec-1)
+
+```{r}
+
+#Value is yearly time series so temporally autocorrelated
+fit <- glm(pa ~ value, data = spEnv, family = binomial)
+
+preds <- predict(fit, spEnv, type = "response")
+
+rocd <- roc(spEnv$pa, preds)
+
+#Maximum of Youden's J statistic
+opt <- rocd$thresholds[which.max(rocd$sensitivities + rocd$specificities - 1)]
+
+idx <- which.min(abs(preds - opt))
+optVal <- spEnv$value[idx]
+
+ecdf(spEnv$value)(optVal)
 
 ```
 

@@ -1,0 +1,577 @@
+---
+title: "ROC-based quantiles, second approach"
+format: 
+  html:
+    self-contained: true
+    fig-format: jpeg
+execute: 
+  echo: true
+  message: false
+  warning: false
+params:
+  pd: ~/projects/decadal_horizons
+  wd: NULL
+  species: NULL
+  
+---
+
+## *`r sub('_',' ',params$species)`*
+#### `r strftime(Sys.time(),format='%Y-%m-%d')`
+
+## Setup
+
+```{r setup}
+
+#Note interactive() is FALSE when clicking the render button
+if(interactive()) {
+  .pd <- '~/projects/decadal_horizons'
+  .wd <- file.path(.pd,'analysis/poc/roc_quantiles')
+  .spp <- 'Abutilon_puberulentum'
+} else {
+  .pd <- params$pd
+  .wd <- params$wd
+  .spp <- params$species
+}
+
+pd <- function(...) file.path(.pd,...)
+wd <- function(...) file.path(.wd,...)
+
+#---- Initialize Environment ----#
+
+source(pd('src/startup.r'))
+
+invisible(assert_that(!is.null(.wd)))
+
+#---- Libraries ----
+suppressWarnings(
+  suppressPackageStartupMessages({
+    library(cutpointr)
+    library(knitr)
+    library(patchwork)
+    library(pROC)
+    library(sf)
+    library(terra)
+    library(qs)
+  }))
+
+tic() #For report execution time
+
+#Source all files in the auto load funs directory
+list.files(pd('src/funs/auto'),full.names=TRUE) %>% walk(source)
+
+source(pd('src/poc/pep/absences.r'))
+source(pd('src/funs/themes.r'))
+
+theme_set(theme_eda)
+
+```
+
+<!-- Look at Trinary Maps --->
+
+```{r}
+
+rangePF <- '/Users/benc/projects/decadal_horizons/data/trinary/Users/ctg/Documents/SDMs/BIEN_1123/_outputs/PPM/TrinaryMaps/Abarema_glauca/Abarema_glauca_Abarema_glauca__full__noBias_1e-06_0_1e-06_0_all_all_none_all_maxnet_none_equalWeights_occEco.tif'
+
+rng <- rast(rangePF)
+
+plot(rng)
+
+crs(rng,proj=TRUE) #+proj=moll +lon_0=0 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs
+res(rng) #4950 6140
+origin(rng) #2062.890 -2873.215
+
+#Pep's rmodel
+# This is in wgs84 and does not match the mollwide projection
+rmodel <- rast(pd('data/pdh_forBen/misc/template.tif'))
+crs(rmodel,proj=TRUE) #+proj=longlat +datum=WGS84 +no_defs
+res(rmodel) #0.25 0.25
+origin(rmodel) #0 0
+
+#Try another rmodel
+rmodel <- rast(pd('data/pep/set_1/had12_ACCESS-ESM1-5_ssp585_spei_2055.tif'))
+crs(rmodel,proj=TRUE) #+proj=longlat +datum=WGS84 +no_defs
+res(rmodel) #0.2498264 0.2495833
+origin(rmodel) #0.000 0.025
+
+```
+
+<!-- Extract targeted ranges from the archives 1 -->
+
+```{r}
+#This is based on Pep's file that identifies which range
+rangePaths <- read_csv('~/projects/gpta/analysis/main/data/range_files.csv')
+
+#Get the species names of the presence data that Pep sent me
+sppNames <- tibble(spp=list.files(pd('data/pdh_forBen/test1001sp'))) %>%
+  mutate(spp=gsub('_',' ',spp),
+         spp=gsub('.qs','',spp))
+
+#Join and extract info about method (rangebag, points, ppm)
+sppRange <- rangePaths %>% 
+  inner_join(sppNames,by='spp') %>%
+  mutate(method=str_extract(range_pf,'^[^/]+'),.before=2) 
+
+sppRange %>% group_by(method) %>% summarize(n=n()) #Has points, ppm, rangebag
+
+sppPPM <- sppRange %>% filter(method=='ppm')
+
+#--- The names in Pep's file don't quite match
+
+#This is a path from Pep's file
+#ppm/BinaryMaps/
+#Achillea_maritima/TP10__Achillea_maritima__full__noBias_1e-06_0_1e-06_0_all_all_none_all_maxnet_none_equalWeights_occEco.tif'
+
+#This is from the archive. Note 'TP10' is in Pep's file but not the arcive
+#Users/ctg/Documents/SDMs/BIEN_1123/_outputs/PPM/TrinaryMaps
+#Achillea_maritima/Achillea_maritima_Achillea_maritima__full__noBias_1e-06_0_1e-06_0_all_all_none_all_maxnet_none_equalWeights_occEco.tif
+
+unzip(pd('data/trinary/TrinaryMaps_PPM.zip'),
+      files=file.path(pre,sppPath),
+      exdir=wd())
+
+#---- Try a different approach. List the files in the archive, extract
+# the species names, and join those to the species names from the presence files
+triPaths <- unzip(pd('data/trinary/TrinaryMaps_PPM.zip'),list=TRUE) %>% as_tibble %>%
+  filter(Length > 0) %>% #directories have length = 0
+  rename(path=Name) %>%
+  mutate(filename=basename(path),.before=1)
+
+triSpp <- triPaths %>%
+  #slice(1:100) %>%
+  #filter(str_detect(Name, "TrinaryMaps/[^/]+/.+.tif$")) %>%
+  mutate(spp = str_extract(path, "(?<=TrinaryMaps/)[^/]+(?=/)"),
+         spp = gsub('_',' ',spp),
+         range_method='ppm',.before=1)
+
+#Join the list of presence species Pep sent to the species in the archive
+triJoin <- sppNames %>%
+  inner_join(triSpp,by='spp')
+
+#TODO: extract just the file name for triJoin, so then I can rename
+# the extracted file to just the species name
+# Save the list of species, new file name, old archive file name and path to a csv for later reference
+tic()
+unzip(pd('data/trinary/TrinaryMaps_PPM.zip'),
+      files=triJoin$path,
+      junkpaths=TRUE,
+      exdir=wd('data/trinary/ppm'))
+toc()
+
+tic()
+all(file.rename(
+  from=wd('data/trinary/ppm',triJoin$filename),
+  to=wd('data/trinary/ppm',paste0(gsub(' ','_',triJoin$spp),'.tif'))
+))
+toc()
+
+triJoin %>% write_csv(wd('data/trinary/archive_map_ppm.csv'))
+
+```
+
+<!-- Extract targeted ranges from the archives 2-->
+
+```{r}
+#Just randomly select and extract ranges from the archive
+
+# the species names, and join those to the species names from the presence files
+triPaths <- unzip(pd('data/trinary/TrinaryMaps_PPM.zip'),list=TRUE) %>% as_tibble %>%
+  filter(Length > 0) %>% #directories have length = 0
+  rename(path=Name) %>%
+  mutate(filename=basename(path),.before=1)
+
+triSpp <- triPaths %>%
+  sample_n(500) %>%
+  #slice(1:100) %>%
+  #filter(str_detect(Name, "TrinaryMaps/[^/]+/.+.tif$")) %>%
+  mutate(spp = str_extract(path, "(?<=TrinaryMaps/)[^/]+(?=/)"),
+         spp = gsub('_',' ',spp),
+         range_method='ppm',.before=1)
+
+#No duplicates (do this on the full set of species)
+#triSpp %>% group_by(spp) %>% summarize(n=n()) %>% filter(n>1)
+
+# 500 files takes 100 seconds
+tic()
+unzip(pd('data/trinary/TrinaryMaps_PPM.zip'),
+      files=triSpp$path,
+      junkpaths=TRUE,
+      exdir=wd('data/trinary_500'))
+toc()
+
+#Rename the files for convenience
+tic()
+all(file.rename(
+  from=wd('data/trinary_500',triSpp$filename),
+  to=wd('data/trinary_500',paste0(gsub(' ','_',triSpp$spp),'.tif'))
+))
+toc()
+
+# Save the list of species, new file name, old archive file name and path to a csv for later reference
+triSpp %>% write_csv(wd('data/trinary_500_files.csv'))
+
+```
+
+<!-- Absences based on Trinary maps - OLD -->
+
+```{r}
+
+#Pep's rmodel
+# This is in wgs84 and does not match the mollwide projection
+rmodel <- rast(pd('data/pdh_forBen/misc/template.tif'))
+crs(rmodel,proj=TRUE) #+proj=longlat +datum=WGS84 +no_defs
+res(rmodel) #0.25 0.25
+origin(rmodel) #0 0
+
+pres <- qread(pd('data/pdh_forBen/test1001sp/Achillea_maritima.qs')) %>% as_tibble %>%
+  distinct(cell)
+
+#Project mollwide rasters to wgs84 to match presence rasters.
+rawRangeF <- list.files(wd('data/trinary/ppm'),full.names = TRUE)
+
+rangeMoll <- rast(rawRangeF[[1]])
+
+rangeWgs <- project(rangeMoll,rmodel,method='near',align_only=TRUE)
+
+#Generate absences based on Pep's function
+rsp = rast (rmodel)
+values(rsp) <- 1:terra::ncell(rsp)
+rsp <- terra::subst(rsp,from=cid,
+                    to=rep(1,length(cid)),
+                    others=NA)
+
+buffdist <- 1e6
+rngMsk <- subst(rangeWgs,from=2,to=1)
+buf <- buffer(rangeWgs,width=buffdist)
+buf[!buf] <- NA #buffered range
+crp <- crop(habitat_mask,buf)
+msk <- mask(buf,crp)
+# To remove pixels based on mask, set inverse=TRUE
+msk2 <- mask(msk,rngMsk,inverse=TRUE)
+
+#Crop the raster model to the size of the abs mask and then apply the abs mask
+rspAbs <- mask(crop(rsp,msk2),msk2)
+
+#Get the cell ids
+rspAbs %>% as.data.frame %>% as_tibble
+
+rsp_bufdist <- terra::buffer(rsp,width=buffdist) *1
+rsp_bufdist <- terra::subst (rsp_bufdist,from=1,to=1,others=NA)
+abs <- tidyterra::as_tibble(rsp_bufdist,na.rm=T,cells=T,xy=T) |>
+  dplyr::filter(!cell %in% cid) |> pull(cell)
+
+```
+
+<!-- Absences based on Trinary maps - NEW -->
+
+```{r}
+#Use trinary maps for both presences and absences
+# See main/roc_quantiles.r for updated code
+
+#Pep's rmodel
+# This is in wgs84 and does not match the mollwide projection
+rmodel <- rast(pd('data/pdh_forBen/misc/template.tif'))
+
+crs(rmodel,proj=TRUE) #+proj=longlat +datum=WGS84 +no_defs
+res(rmodel) #0.25 0.25
+origin(rmodel) #0 0
+
+#Project mollwide rasters to wgs84 to match presence rasters.
+rawRangeF <- list.files(wd('data/trinary/ppm'),full.names = TRUE)
+
+rangeMoll <- rast(rawRangeF[[1]])
+
+rng <- project(rangeMoll,rmodel,method='near',align_only=TRUE)
+
+habitat_mask <- subst(rmodel,from=0,to=NA)
+#Generate absences based on Pep's function
+
+# Make a template for the cell ids
+rsp <- rmodel
+values(rsp) <- 1:terra::ncell(rsp)
+names(rsp) <- 'cell'
+
+#---- Presences ----
+
+# Extract presences from the map where value=1
+presMsk <- subst(rng,from=1,to=TRUE,other=NA) #Make a mask where the value is 1
+presIds <- mask(crop(rsp,presMsk),presMsk) #Crop the template then mask based on pres mask
+
+pres <- presIds %>% as.data.frame %>% as_tibble %>%
+  mutate(occ=TRUE) #Extract cell ids
+
+#---- Absences ----
+
+# mask() keeps all values where mask==1 or TRUE (or has a value?)
+# mask(inverse=TRUE) sets all values to NA where mask==1 or TRUE (or has a value?)
+
+buffdist <- 1e6 #1000 kilometers
+rngMsk <- rng >= 1 #Any cell with a value (here 1 or 2) will be true
+rngBuf <- buffer(rngMsk,width=buffdist) #Returns T/F layer
+rngBuf[!rngBuf] <- NA #Set F (outside buffer) to NA
+
+#Remove non-habitat and any potential presence locations
+rngHab <- mask(rngBuf,crop(habitat_mask,rngBuf)) #Mask the buffered range by habitat
+rngAbs <- mask(rngHab,rngMsk,inverse=TRUE) #Now clip out anywhere trinary map had 1 or 2
+
+absIds <- mask(crop(rsp,rngAbs),rngAbs) #Crop the template then mask based on pres mask
+absp <- absIds %>% as.data.frame %>% as_tibble %>%
+  mutate(occ=FALSE) #Extract cell ids
+
+dat <- bind_rows(pres,absp)
+
+dat %>% group_by(occ) %>% summarize(n=n())
+
+```
+<!-- Load data - Pep's set_1 -->
+
+```{r}
+#| eval: false
+#| echo: false
+
+#Load Pep's data 
+# This has data like
+#      cell     x     y     n
+#     <dbl> <dbl> <dbl> <int>
+#  1 500907  127. -14.2     1
+#  2 505295  144. -15.1     1
+sp_cells <- qread(pd('data/pep/set_1/Bothriochloa_ewartiana.qs')) %>% as_tibble
+rmodel <- rast(pd('data/pep/set_1/had12_ACCESS-ESM1-5_ssp585_spei_2055.tif'))
+
+habitat_mask <- rnaturalearth::ne_download(type='land',category = 'physical', scale=10,returnclass = 'sf')
+habitat_mask <- terra::rasterize(vect(habitat_mask),rmodel,touches=T)
+
+.buffdist= 10e5
+
+habitat_mask <- rnaturalearth::ne_download(type='land',category = 'physical', scale=10,returnclass = 'sf')
+habitat_mask <- terra::rasterize(vect(habitat_mask),rmodel,touches=T)
+
+plot(habitat_mask) #
+
+
+invisible(assert_that(ncell(rmodel)==ncell(habitat_mask))) #rmodel and habitat mask are the same size
+invisible(assert_that(crs(rmodel,proj=TRUE)==crs(habitat_mask,proj=TRUE))) #habitat_mask does not have a crs
+
+
+# pa==1 means presence, pa==0 means absence
+abcs <- cheap_absences(sp_cells,rmodel,habitat_mask=habitat_mask,
+  partial_absences=FALSE,include_presences=TRUE,method='buffer',
+  buffdist=.buffdist)
+
+#Note 322 pres in the original file, but cheap_absences only returns 107
+# This is due to habitat masking. Should look into this.
+abcs %>% group_by(pa) %>% summarize(n=n())
+
+#Per pep we can just keep years 1982:2014
+had12 <- qread(pd('data/pep/set_1/had12_ACCESS-ESM1-5_ssp585.qs'))  %>%
+  select(-c(x,y)) %>%
+  pivot_longer(-cell,names_to='year') %>%
+  filter(year %in% 1982:2014 & !is.na(value)) %>%
+  mutate(cell=as.integer(cell),year=as.integer(year),value=as.integer(value)) #Reduce size in memory
+
+spEnv <- had12 %>%
+  inner_join(abcs %>% select(-n),by='cell') %>%
+  mutate(pa=as.factor(pa))
+
+```
+
+<!-- Compare Pep's test1001sp and sp_cells species data -->
+
+```{r}
+#| eval: false
+
+#Major takeaway was to ignore the test1001sp files, something might be wrong
+# the cells might be mismatched b/c some species were modeled using multiple appraoches
+# so test1001sp might have used ppm but sp_cells might have used rasterized points.
+rsp <- rast(pd('data/pdh_forBen/misc/template.tif'))
+values(rsp) <- 1:ncell(rsp)
+
+test1001 <- tibble(path=list.files(pd('data/pdh_forBen/test1001sp'),full.names=TRUE)) %>%
+              mutate(filename=basename(path),.before=1)
+
+spcells <- tibble(path=list.files(pd('data/pdh_forBen/sp_cells'),full.names=TRUE)) %>%
+              mutate(filename=basename(path),.before=1)
+
+nrow(test1001) #540
+nrow(spcells) #293,239
+
+fnJoin <- test1001 %>% inner_join(spcells,by='filename')
+
+fnJoin$filename[[10]]
+
+#spfile <- 'Achillea_maritima.qs'
+#spfile <- 'Abutilon_puberulentum.qs'
+#spfile <- "Acacia_helicophylla.qs"
+spfile <- 'Acroceras_amplectens.qs' #okay
+spfile <- 'Adiantum_deltoideum.qs' 
+
+sp1 <- qread(pd("data/pdh_forBen/test1001sp",spfile)) %>% as_tibble %>% distinct(cell)
+
+sp2 <- qread(pd("data/pdh_forBen/sp_cells",spfile)) %>% as_tibble
+
+nrow(sp1); nrow(sp2)
+
+rngSp1 <- subst(rsp,from=sp1$cell,to=1,others=NA)
+plot(terra::trim(rngSp1))
+
+rngSp2 <- subst(rsp,from=sp2$cell,to=1,others=NA)
+plot(terra::trim(rngSp2))
+
+```
+
+<!-- Look at Pep's pdh_forBen data -->
+
+```{r}
+#| eval: false
+#| echo: false
+
+#This has data like
+ #     cell     n var   gcm        ssp     x.x   y.x   x.y   y.y `1981` `1982` `1983`
+ #    <dbl> <int> <chr> <chr>      <chr> <dbl> <dbl> <dbl> <dbl>  <dbl>  <dbl>  <dbl>
+ # 1 407853     5 had12 ACCESS-ES… ssp1… -96.9  19.1 -96.9  19.1      0      0      0
+ # 2 409292     8 had12 ACCESS-ES… ssp1… -97.1  18.9 -97.1  18.9      0      0      0
+sp_cells <- qread(pd('data/pdh_forBen/test1001sp/Abutilon_puberulentum.qs')) %>% as_tibble
+rmodel <- rast(pd('data/pdh_forBen/misc/template.tif'))
+
+nrow(sp_cells)
+cat(unique(sp_cells$var))
+cat(unique(sp_cells$gcm)) #ACCESS-ESM1-5 CanESM5
+cat(unique(sp_cells$ssp)) #ssp126 ssp245 ssp370 ssp585
+cat(names(sp_cells))
+
+#Strange this just has two cells. the file in test1001sp has a lot more
+sp_cells <- qread(pd('data/pdh_forBen/sp_cells/Abutilon_puberulentum.qs')) %>% as_tibble
+
+#Per Pep: try temp or has12 (accumulated severity ? or hms12 mean severity)
+
+# defintions from https://docs.google.com/document/d/1e0ycGPHCyep2q53VRxneugj6_-Sev552NI4ORZ7S5eA/edit
+# The hydrologic year is measured from October 1st to September 30th in the 
+# Northern Hemisphere and from July 1st to June 30th in the Southern Hemisphere.
+#HAS - Hydrologic Year Accumulated Severity - Sum of drought indices under drought 
+#   conditions that occurred during the hydrologic year
+#HMS - Hydrologic Year Mean Severity
+#Mean of severity of drought events that occurred during hydrologic year.
+
+# Can't do it this way b/c species files don't have absence env values
+# #Ask Pep: are ssps relevant for years 1982 to 2014?
+# #Only one GCM so don't have to select one
+# # sp_cells only has env values where the species is present, but I also need 
+# # env values where the species is absent.
+# spEnv <- sp_cells %>%
+#   filter(var=='has12' & ssp=='ssp585') %>%
+#   select(cell,n,as.character(1981:2014)) %>%
+#   drop_na %>%
+#   inner_join(abcs %>% select(cell,pa),by='cell') %>%
+#   pivot_longer(-c(cell,n,pa),names_to='year') %>%
+#   mutate(across(c(cell,n,year),as.integer))
+
+```
+
+Load data - Pep's pdh_forBen
+
+```{r}
+.var <- 'has12'
+.gcm <- 'ACCESS-ESM1-5'
+.ssp <- 'ssp126'
+
+.buffdist= 10e5
+
+sp_cells <- qread(pd('data/pdh_forBen/test1001sp',glue('{.spp}.qs'))) %>% as_tibble
+rmodel <- rast(pd('data/pdh_forBen/misc/template.tif'))
+
+ #Sanity checks
+invisible(assert_that(all(sp_cells$cell < ncell(rmodel)))) #Make sure spp cell ids are within the range of rmodel cell ids
+
+
+#Habitat mask should have NA for not habitat. Can use rmodel in this case
+habitat_mask <- subst(rmodel,0,NA)
+plot(habitat_mask)
+
+#Only need cell id, (and maybe n if using weights) 
+pres <- sp_cells %>% distinct(cell,n)
+
+# pa==1 means presence, pa==0 means absence
+abcs <- cheap_absences(pres,
+  rmodel,
+  weights='n',
+  habitat_mask=habitat_mask,
+  partial_absences=FALSE,
+  include_presences=TRUE,
+  method='buffer',
+  buffdist=.buffdist)
+
+abcs %>% group_by(pa) %>% summarize(n=n())
+
+envDat <- qread(pd('data/pdh_forBen/timeseries',glue('{.var}_{.gcm}_{.ssp}.qs')))
+nrow(envDat)
+
+# Join the env data to the pres/abs data 
+spEnv <- envDat %>%
+  select(cell,as.character(1981:2014)) %>%
+  drop_na %>%
+  inner_join(abcs %>% select(cell,pa),by='cell') %>%
+  pivot_longer(-c(cell,pa),names_to='year') %>%
+  mutate(across(c(cell,year),as.integer),pa=factor(pa))
+
+spEnv %>% group_by(pa) %>% summarize(n=n())
+
+```
+
+```{r}
+
+ggplot(spEnv,aes(x=value,y=pa)) +
+  geom_boxplot() +
+  labs(x=.var,y='Present')
+  
+
+ggplot(spEnv,aes(x=value,color=pa)) +
+  geom_density() +
+  labs(x=.var,color='Present')
+
+```
+
+Determine the quantile of the optimal threshold using `sens + spec`
+
+Set `1` as the positive class and assume it has lower values.
+
+```{r}
+oc <- cutpointr(spEnv,value,pa, method = maximize_metric, metric = sum_sens_spec, 
+                pos_class=1, direction='<=')
+
+summary(oc)
+plot(oc)
+plot_metric(oc)
+```
+
+Quantile based on optimal cut_point
+
+```{r}
+ecdf(spEnv$value)(oc$optimal_cutpoint)
+```
+
+```{r finalize}
+
+#---- Warnings ----
+warns <- warnings()
+
+if(length(warns) > 0) { cat('\n'); summary(warns); cat('\n') }
+
+#---- Git Repo ----
+repo <- git2r::repository(pd('src'))
+gitSha <- git2r::sha(git2r::repository_head(repo)) %>% substr(1,7)
+
+rmt <- git2r::remotes(repo)
+
+if(length(rmt)) {
+  #TODO: need to parse rmt when I have a repo that has a remote
+  shaTxt <- glue('[{gitSha}](https://github.com/{rmt}/tree/{gitSha})')
+} else {
+  shaTxt <- gitSha
+}
+
+```
+
+Commit when this report was run: `r shaTxt`
+
+`r strftime(Sys.time(),format='%Y-%m-%d %H:%M')`. `r Sys.timezone()`
+
+`r capture.output(toc())`
