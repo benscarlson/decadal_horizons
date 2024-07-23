@@ -17,7 +17,6 @@ params:
 ```{r setup}
 #| include: false
 
-#Note interactive() is FALSE when clicking the render button
 if(interactive()) {
   .pd <- '~/projects/decadal_horizons'
   .wd <- file.path(.pd,'analysis/poc/roc_quantiles')
@@ -64,13 +63,20 @@ theme_set(theme_pres)
 #---- Load data ----
 message('Loading data...')
 
-dat <- read_csv(.datPF)
+dat <- read_csv(.datPF) %>%
+  filter(direction=="<=")
 
 ```
 
 #### `r strftime(Sys.time(),format='%Y-%m-%d')`
 
+* Absences based on trinary maps, taken from 1000 km buffer outside the max species extent.
+* Presenses based on trinary maps, taken from minimum species extent (pixel value = 1).
+* 500 species randomly selected from the PPM trinary maps.
+
 ### Optimal quantile
+
+Metric: `r unique(dat$metric)`
 
 ```{r}
 
@@ -93,6 +99,8 @@ ggplot(aes(x=log10(n_pres),y=optimal_quantile)) +
 ```
 
 ### Sensitivity
+
+Metric: `r unique(dat$metric)`
 
 ```{r}
 

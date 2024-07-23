@@ -4,13 +4,11 @@
 
 # ==== Breezy setup ====
 
-
-
 '
 Title
 
 Usage:
-roc_quantiles.r <dat> <out>
+roc_quantiles.r <dat> <out> [--parMethod=<parMethod>] [--cores=<cores>] [--mpilogs=<mpilogs>]
 
 Control files:
   ctfs/species.csv
@@ -20,6 +18,9 @@ Parameters:
   out: path to output directory.
 
 Options:
+-p --parMethod=<parMethod>  Either <mpi | mc>. If not passed in, script will run sequentially.
+-c --cores=<cores>  The number of cores
+-m --mpilogs=<mpilogs> Directory for the mpi log files
 
 ' -> doc
 
@@ -29,10 +30,10 @@ if(interactive()) {
   .pd <- here::here()
   .wd <- file.path(.pd,'analysis/poc/roc_quantiles')
   
-  .cores <- 9
+  .cores <- NULL
   #.rangesP <- file.path(.wd,'data/trinary/ppm')
   .rangesP <- file.path(.wd,'data/trinary_500')
-  .parMethod <- 'mc'
+  .parMethod <- NULL
   .outPF <- file.path(.wd,'data/roc_quantiles.csv')
   
 } else {
@@ -46,8 +47,11 @@ if(interactive()) {
 
   source(file.path(.pd,'src','funs','input_parse.r'))
   
-  .datP <- makePath(ag$dat)
-  .outP <- makePath(ag$out)
+  .cores <- parseParam(ag$cores)
+  .rangesP <- makePath(ag$dat)
+  .mpiLogP <- makePath(ag$mpilogs,'mpilogs')
+  .outPF <- makePath(ag$out)
+  .parMethod <- ag$parMethod
 
 }
 
@@ -70,7 +74,6 @@ suppressWarnings(
   }))
 
 conflicts_prefer(terra::trim)
-#/
 
 #Source all files in the auto load funs directory
 list.files(pd('src/funs/auto'),full.names=TRUE) %>% walk(source)
@@ -220,10 +223,15 @@ foreach(i=icount(nrow(species)),.combine='rbind') %mypar% {
           #.x <- 'sum_sens_spec'
           
           oc <- cutpointr(spEnv,value,occ, method = maximize_metric, metric = get(.x), 
-                          pos_class=1, direction='<=') %>% 
+                          pos_class=1) %>% 
             as_tibble %>%
-            select(direction,optimal_cutpoint,sum_sens_spec,sensitivity,specificity,AUC) %>%
-            mutate(optimal_quantile=ecdf(spEnv$value)(optimal_cutpoint))
+            select(direction,optimal_cutpoint,sum_sens_spec,sensitivity,specificity,AUC)
+          
+          #Calculate the quantile from the presence distribution based on the optimal cutpoint
+          presCdf <- ecdf(filter(spEnv,occ==1)$value)
+          
+          oc %>%
+            mutate(optimal_quantile=presCdf(optimal_cutpoint)) #0.616
           
         })) %>%
         unnest(cols=cut_dat)
